@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -35,14 +34,15 @@ import (
 	"strings"
 	"time"
 
+	_ "crypto/sha256" // needed for selfupdate hashers
+
 	"github.com/fatih/color"
-	isatty "github.com/mattn/go-isatty"
+	"github.com/mattn/go-isatty"
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/env"
+	"github.com/minio/pkg/v3/env"
 	"github.com/minio/selfupdate"
-	_ "github.com/minio/sha256-simd" // Needed for sha256 hash verifier.
 )
 
 // Check for new software updates.
@@ -155,8 +155,7 @@ func GetCurrentReleaseTime() (releaseTime time.Time, err *probe.Error) {
 //
 // https://github.com/moby/moby/blob/master/daemon/initlayer/setup_unix.go#L25
 //
-//     "/.dockerenv":      "file",
-//
+//	"/.dockerenv":      "file",
 func IsDocker() bool {
 	_, e := os.Stat("/.dockerenv")
 	if os.IsNotExist(e) {
@@ -192,7 +191,7 @@ func IsSourceBuild() bool {
 // DO NOT CHANGE USER AGENT STYLE.
 // The style should be
 //
-//   mc (<OS>; <ARCH>[; dcos][; kubernetes][; docker][; source]) mc/<VERSION> mc/<RELEASE-TAG> mc/<COMMIT-ID>
+//	mc (<OS>; <ARCH>[; dcos][; kubernetes][; docker][; source]) mc/<VERSION> mc/<RELEASE-TAG> mc/<COMMIT-ID>
 //
 // Any change here should be discussed by opening an issue at
 // https://github.com/minio/mc/issues.
@@ -245,7 +244,7 @@ func downloadReleaseURL(releaseChecksumURL string, timeout time.Duration) (conte
 	if resp.StatusCode != http.StatusOK {
 		return content, probe.NewError(fmt.Errorf("Error downloading URL %s. Response: %v", releaseChecksumURL, resp.Status))
 	}
-	contentBytes, e := ioutil.ReadAll(resp.Body)
+	contentBytes, e := io.ReadAll(resp.Body)
 	if e != nil {
 		return content, probe.NewError(fmt.Errorf("Error reading response. %s", err))
 	}
@@ -313,23 +312,27 @@ func getLatestReleaseTime(customReleaseURL string, timeout time.Duration) (sha25
 	return parseReleaseData(data)
 }
 
-func getDownloadURL(customReleaseURL string, releaseTag string) (downloadURL string) {
+func getDownloadURL(customReleaseURL, releaseTag string) (downloadURL string) {
 	// Check if we are docker environment, return docker update command
 	if IsDocker() {
 		// Construct release tag name.
 		return fmt.Sprintf("docker pull minio/mc:%s", releaseTag)
 	}
 
-	u, err := url.Parse(customReleaseURL)
-	if err != nil {
-		return mcReleaseURL + "archive/" + "mc." + releaseTag
+	if customReleaseURL == "" {
+		return mcReleaseURL + "archive/mc." + releaseTag
+	}
+
+	u, e := url.Parse(customReleaseURL)
+	if e != nil {
+		return mcReleaseURL + "archive/mc." + releaseTag
 	}
 
 	u.Path = path.Dir(u.Path) + "/mc." + releaseTag
 	return u.String()
 }
 
-func getUpdateInfo(customReleaseURL string, timeout time.Duration) (updateMsg string, sha256Hex string, currentReleaseTime, latestReleaseTime time.Time, releaseTag string, err *probe.Error) {
+func getUpdateInfo(customReleaseURL string, timeout time.Duration) (updateMsg, sha256Hex string, currentReleaseTime, latestReleaseTime time.Time, releaseTag string, err *probe.Error) {
 	currentReleaseTime, err = GetCurrentReleaseTime()
 	if err != nil {
 		return updateMsg, sha256Hex, currentReleaseTime, latestReleaseTime, releaseTag, err.Trace()
@@ -420,7 +423,7 @@ func getUpdateReaderFromURL(u *url.URL, transport http.RoundTripper) (io.ReadClo
 	return newProgressReader(resp.Body, "mc", resp.ContentLength), nil
 }
 
-func doUpdate(customReleaseURL string, sha256Hex string, latestReleaseTime time.Time, releaseTag string, ok bool) (updateStatusMsg string, err *probe.Error) {
+func doUpdate(customReleaseURL, sha256Hex string, latestReleaseTime time.Time, releaseTag string, ok bool) (updateStatusMsg string, err *probe.Error) {
 	fmtReleaseTime := latestReleaseTime.Format(mcReleaseTagTimeLayout)
 	if !ok {
 		updateStatusMsg = colorGreenBold("mc update to version %s canceled.",
@@ -510,7 +513,7 @@ func (s updateMessage) JSON() string {
 
 func mainUpdate(ctx *cli.Context) {
 	if len(ctx.Args()) > 1 {
-		cli.ShowCommandHelpAndExit(ctx, ctx.Command.Name, -1)
+		showCommandHelpAndExit(ctx, -1)
 	}
 
 	globalQuiet = ctx.Bool("quiet") || ctx.GlobalBool("quiet")

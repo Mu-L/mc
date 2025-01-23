@@ -33,15 +33,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cheggaaa/pb"
 	"github.com/inconshreveable/mousetrap"
 	"github.com/minio/cli"
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio-go/v7/pkg/set"
-	"github.com/minio/pkg/console"
-	"github.com/minio/pkg/env"
-	"github.com/minio/pkg/trie"
-	"github.com/minio/pkg/words"
+	"github.com/minio/pkg/v3/console"
+	"github.com/minio/pkg/v3/env"
+	"github.com/minio/pkg/v3/trie"
+	"github.com/minio/pkg/v3/words"
+	"golang.org/x/term"
 
 	completeinstall "github.com/posener/complete/cmd/install"
 )
@@ -94,12 +95,12 @@ func init() {
 }
 
 // Main starts mc application
-func Main(args []string) {
+func Main(args []string) error {
 	if len(args) > 1 {
 		switch args[1] {
 		case "mc", filepath.Base(args[0]):
 			mainComplete()
-			return
+			return nil
 		}
 	}
 
@@ -116,11 +117,11 @@ func Main(args []string) {
 	probe.SetAppInfo("Commit", ShortCommitID)
 
 	// Fetch terminal size, if not available, automatically
-	// set globalQuiet to true.
-	if w, e := pb.GetTerminalWidth(); e != nil {
-		globalQuiet = true
+	// set globalQuiet to true on non-window.
+	if w, h, e := term.GetSize(int(os.Stdout.Fd())); e != nil {
+		globalQuiet = runtime.GOOS != "windows"
 	} else {
-		globalTermWidth = w
+		globalTermWidth, globalTermHeight = w, h
 	}
 
 	// Set the mc app name.
@@ -133,10 +134,13 @@ func Main(args []string) {
 	// Monitor OS exit signals and cancel the global context in such case
 	go trapSignals(os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
 
-	// Run the app - exit on error.
-	if err := registerApp(appName).Run(args); err != nil {
-		os.Exit(1)
-	}
+	globalHelpPager = newTermPager()
+	// Wait until the user quits the pager
+	defer globalHelpPager.WaitForExit()
+
+	parsePagerDisableFlag(args)
+	// Run the app
+	return registerApp(appName).Run(args)
 }
 
 func flagValue(f cli.Flag) reflect.Value {
@@ -159,7 +163,7 @@ func visibleFlags(fl []cli.Flag) []cli.Flag {
 }
 
 // Function invoked when invalid flag is passed
-func onUsageError(ctx *cli.Context, err error, subcommand bool) error {
+func onUsageError(ctx *cli.Context, err error, _ bool) error {
 	type subCommandHelp struct {
 		flagName string
 		usage    string
@@ -184,11 +188,12 @@ func onUsageError(ctx *cli.Context, err error, subcommand bool) error {
 
 	// Do the good-looking printing now
 	fmt.Fprintln(&errMsg, "Invalid command usage,", err.Error())
-	fmt.Fprintln(&errMsg, "")
-	fmt.Fprintln(&errMsg, "SUPPORTED FLAGS:")
-	for _, h := range help {
-		spaces := string(bytes.Repeat([]byte{' '}, maxWidth-len(h.flagName)))
-		fmt.Fprintf(&errMsg, "   %s%s%s\n", h.flagName, spaces, h.usage)
+	if len(help) > 0 {
+		fmt.Fprintln(&errMsg, "\nSUPPORTED FLAGS:")
+		for _, h := range help {
+			spaces := string(bytes.Repeat([]byte{' '}, maxWidth-len(h.flagName)))
+			fmt.Fprintf(&errMsg, "   %s%s%s\n", h.flagName, spaces, h.usage)
+		}
 	}
 	console.Fatal(errMsg.String())
 	return err
@@ -252,9 +257,6 @@ func migrate() {
 	// Migrate config files if any.
 	migrateConfig()
 
-	// Migrate session files if any.
-	migrateSession()
-
 	// Migrate shared urls if any.
 	migrateShare()
 }
@@ -269,11 +271,6 @@ func initMC() {
 		if !globalQuiet && !globalJSON {
 			console.Infoln("Configuration written to `" + mustGetMcConfigPath() + "`. Please update your access credentials.")
 		}
-	}
-
-	// Check if mc session directory exists.
-	if !isSessionDirExists() {
-		fatalIf(createSessionDir().Trace(), "Unable to create session config directory.")
 	}
 
 	// Check if mc share directory exists.
@@ -332,10 +329,10 @@ func installAutoCompletion() {
 				"Supported shells are: bash, zsh, fish")
 	}
 
-	err := completeinstall.Install(filepath.Base(os.Args[0]))
+	e := completeinstall.Install(filepath.Base(os.Args[0]))
 	var printMsg string
-	if err != nil && strings.Contains(err.Error(), "* already installed") {
-		errStr := err.Error()[strings.Index(err.Error(), "\n")+1:]
+	if e != nil && strings.Contains(e.Error(), "* already installed") {
+		errStr := e.Error()[strings.Index(e.Error(), "\n")+1:]
 		re := regexp.MustCompile(`[::space::]*\*.*` + shellName + `.*`)
 		relatedMsg := re.FindStringSubmatch(errStr)
 		if len(relatedMsg) > 0 {
@@ -348,7 +345,7 @@ func installAutoCompletion() {
 		if completeinstall.IsInstalled(filepath.Base(os.Args[0])) || completeinstall.IsInstalled("mc") {
 			console.Infoln("autocompletion is enabled.", printMsg)
 		} else {
-			fatalIf(probe.NewError(err), "Unable to install auto-completion.")
+			fatalIf(probe.NewError(e), "Unable to install auto-completion.")
 		}
 	} else {
 		console.Infoln("enabled autocompletion in your '" + shellName + "' rc file. Please restart your shell.")
@@ -356,6 +353,8 @@ func installAutoCompletion() {
 }
 
 func registerBefore(ctx *cli.Context) error {
+	deprecatedFlagsWarning(ctx)
+
 	if ctx.IsSet("config-dir") {
 		// Set the config directory.
 		setMcConfigDir(ctx.String("config-dir"))
@@ -399,7 +398,7 @@ func findClosestCommands(commandsTree *trie.Trie, command string) []string {
 // Check for updates and print a notification message
 func checkUpdate(ctx *cli.Context) {
 	// Do not print update messages, if quiet flag is set.
-	if ctx.Bool("quiet") || ctx.GlobalBool("quiet") {
+	if !ctx.Bool("quiet") && !ctx.GlobalBool("quiet") {
 		// Its OK to ignore any errors during doUpdate() here.
 		if updateMsg, _, currentReleaseTime, latestReleaseTime, _, err := getUpdateInfo("", 2*time.Second); err == nil {
 			printMsg(updateMessage{
@@ -417,43 +416,49 @@ func checkUpdate(ctx *cli.Context) {
 
 var appCmds = []cli.Command{
 	aliasCmd,
-	lsCmd,
-	mbCmd,
-	rbCmd,
+	adminCmd,
+	anonymousCmd,
+	batchCmd,
 	cpCmd,
-	mvCmd,
-	rmCmd,
-	mirrorCmd,
 	catCmd,
-	headCmd,
-	pipeCmd,
-	findCmd,
-	sqlCmd,
-	statCmd,
-	treeCmd,
+	configCmd,
+	corsCmd,
+	diffCmd,
 	duCmd,
-	retentionCmd,
-	legalHoldCmd,
-	supportCmd,
-	licenseCmd,
-	shareCmd,
-	versionCmd,
-	ilmCmd,
 	encryptCmd,
 	eventCmd,
-	watchCmd,
-	undoCmd,
-	anonymousCmd,
-	policyCmd,
-	tagCmd,
-	diffCmd,
-	replicateCmd,
-	adminCmd,
-	configCmd,
-	updateCmd,
-	readyCmd,
-	pingCmd,
+	findCmd,
+	getCmd,
+	headCmd,
+	ilmCmd,
+	idpCmd,
+	licenseCmd,
+	legalHoldCmd,
+	lsCmd,
+	mbCmd,
+	mvCmd,
+	mirrorCmd,
 	odCmd,
+	pingCmd,
+	policyCmd,
+	pipeCmd,
+	putCmd,
+	quotaCmd,
+	rmCmd,
+	retentionCmd,
+	rbCmd,
+	replicateCmd,
+	readyCmd,
+	sqlCmd,
+	statCmd,
+	supportCmd,
+	shareCmd,
+	treeCmd,
+	tagCmd,
+	undoCmd,
+	updateCmd,
+	versionCmd,
+	watchCmd,
 }
 
 func printMCVersion(c *cli.Context) {
@@ -475,7 +480,10 @@ func registerApp(name string) *cli.App {
 	app := cli.NewApp()
 	app.Name = name
 	app.Action = func(ctx *cli.Context) error {
-		if strings.HasPrefix(ReleaseTag, "RELEASE.") {
+		mcEnable := env.Get("MC_UPDATE", madmin.EnableOn)
+		minioEnable := env.Get("MINIO_UPDATE", madmin.EnableOn)
+
+		if strings.HasPrefix(ReleaseTag, "RELEASE.") && (mcEnable == madmin.EnableOn || minioEnable == madmin.EnableOn) {
 			// Check for new updates from dl.min.io.
 			checkUpdate(ctx)
 		}
@@ -486,12 +494,11 @@ func registerApp(name string) *cli.App {
 			return nil
 		}
 
-		if ctx.Args().First() != "" {
-			commandNotFound(ctx, app.Commands)
-		} else {
-			cli.ShowAppHelp(ctx)
+		if ctx.Args().First() == "" {
+			showAppHelpAndExit(ctx)
 		}
 
+		commandNotFound(ctx, app.Commands)
 		return exitStatus(globalErrorExitStatus)
 	}
 
@@ -505,6 +512,23 @@ func registerApp(name string) *cli.App {
 	app.CustomAppHelpTemplate = mcHelpTemplate
 	app.EnableBashCompletion = true
 	app.OnUsageError = onUsageError
+	app.After = func(*cli.Context) error {
+		globalExpiringCerts.Range(func(k, v interface{}) bool {
+			host := k.(string)
+			expires := v.(time.Time)
+			fmt.Fprintf(os.Stderr, "\n")
+			fmt.Fprintf(os.Stderr, "== WARN: `%s` certificate will expire in %s. Renew soon to avoid outage.\n", host, expires)
+			fmt.Fprintf(os.Stderr, "\n")
+			return true
+		})
+		return nil
+	}
+
+	if isTerminal() && !globalPagerDisabled {
+		app.HelpWriter = globalHelpPager
+	} else {
+		app.HelpWriter = os.Stdout
+	}
 
 	return app
 }
@@ -512,4 +536,18 @@ func registerApp(name string) *cli.App {
 // mustGetProfilePath must get location that the profile will be written to.
 func mustGetProfileDir() string {
 	return filepath.Join(mustGetMcConfigDir(), globalProfileDir)
+}
+
+func showCommandHelpAndExit(cliCtx *cli.Context, code int) {
+	cli.ShowCommandHelp(cliCtx, cliCtx.Command.Name)
+	// Wait until the user quits the pager
+	globalHelpPager.WaitForExit()
+	os.Exit(code)
+}
+
+func showAppHelpAndExit(cliCtx *cli.Context) {
+	cli.ShowAppHelp(cliCtx)
+	// Wait until the user quits the pager
+	globalHelpPager.WaitForExit()
+	os.Exit(globalErrorExitStatus)
 }

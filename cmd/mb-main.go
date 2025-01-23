@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -24,7 +24,7 @@ import (
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var mbFlags = []cli.Flag{
@@ -114,7 +114,7 @@ func (s makeBucketMessage) JSON() string {
 // Validate command line arguments.
 func checkMakeBucketSyntax(cliCtx *cli.Context) {
 	if !cliCtx.Args().Present() {
-		cli.ShowCommandHelpAndExit(cliCtx, "mb", 1) // last argument is exit code
+		showCommandHelpAndExit(cliCtx, 1) // last argument is exit code
 	}
 }
 
@@ -136,7 +136,7 @@ func mainMakeBucket(cliCtx *cli.Context) error {
 		// Instantiate client for URL.
 		clnt, err := newClient(targetURL)
 		if err != nil {
-			errorIf(err.Trace(targetURL), "Invalid target `"+targetURL+"`.")
+			errorIf(err.Trace(targetURL), "Invalid target `%s`.", targetURL)
 			cErr = exitStatus(globalErrorExitStatus)
 			continue
 		}
@@ -150,7 +150,7 @@ func mainMakeBucket(cliCtx *cli.Context) error {
 			case BucketNameEmpty:
 				errorIf(err.Trace(targetURL), "Unable to make bucket, please use `mc mb %s`.", urlJoinPath(targetURL, "your-bucket-name"))
 			default:
-				errorIf(err.Trace(targetURL), "Unable to make bucket `"+targetURL+"`.")
+				errorIf(err.Trace(targetURL), "Unable to make bucket `%s`.", targetURL)
 			}
 			cErr = exitStatus(globalErrorExitStatus)
 			continue

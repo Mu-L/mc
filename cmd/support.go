@@ -22,23 +22,40 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
-	"github.com/minio/madmin-go"
+	json "github.com/minio/colorjson"
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio-go/v7/pkg/set"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
-const featureToggleMessageTag = "FeatureToggleMessage"
+const (
+	supportSuccessMsgTag = "SupportSuccessMessage"
+	supportErrorMsgTag   = "SupportErrorMessage"
+)
+
+var supportGlobalFlags = append(globalFlags,
+	cli.BoolFlag{
+		Name:   "dev",
+		Usage:  "Development mode",
+		Hidden: true,
+	},
+	cli.BoolFlag{
+		Name:  "airgap",
+		Usage: "use in environments without network access to SUBNET (e.g. airgapped, firewalled, etc.)",
+	},
+)
 
 var supportSubcommands = []cli.Command{
 	supportRegisterCmd,
 	supportCallhomeCmd,
-	supportLogsCmd,
 	supportDiagCmd,
 	supportPerfCmd,
 	supportInspectCmd,
 	supportProfileCmd,
 	supportTopCmd,
+	supportProxyCmd,
+	supportUploadCmd,
 }
 
 var supportCmd = cli.Command{
@@ -63,9 +80,9 @@ func validateToggleCmdArg(arg string) error {
 	return nil
 }
 
-func checkToggleCmdSyntax(ctx *cli.Context, cmdName string) (string, string) {
+func checkToggleCmdSyntax(ctx *cli.Context) (string, string) {
 	if len(ctx.Args()) != 2 {
-		cli.ShowCommandHelpAndExit(ctx, cmdName, 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 
 	arg := ctx.Args().Get(0)
@@ -77,8 +94,12 @@ func checkToggleCmdSyntax(ctx *cli.Context, cmdName string) (string, string) {
 	return alias, arg
 }
 
-func setToggleMessageColor() {
-	console.SetColor(featureToggleMessageTag, color.New(color.FgGreen, color.Bold))
+func setSuccessMessageColor() {
+	console.SetColor(supportSuccessMsgTag, color.New(color.FgGreen, color.Bold))
+}
+
+func setErrorMessageColor() {
+	console.SetColor(supportErrorMsgTag, color.New(color.FgYellow, color.Italic))
 }
 
 func featureStatusStr(enabled bool) string {
@@ -88,12 +109,20 @@ func featureStatusStr(enabled bool) string {
 	return "disabled"
 }
 
-func validateClusterRegistered(alias string) string {
-	apiKey := getSubnetAPIKeyFromConfig(alias)
-	if len(apiKey) == 0 {
-		e := fmt.Errorf("Please register the cluster first by running 'mc support register %s'", alias)
-		fatalIf(probe.NewError(e), "Cluster not registered.")
+func validateClusterRegistered(alias string, cmdTalksToSubnet bool) string {
+	// Non-registered execution allowed only in following scenarios
+	// command doesn't talk to subnet: dev mode (`--dev` passed)
+	// command talks to subnet: dev+airgapped mode (both `--dev` and `--airgap` passed)
+	requireRegistration := !GlobalDevMode
+	if cmdTalksToSubnet {
+		requireRegistration = !(GlobalDevMode && globalAirgapped)
 	}
+
+	apiKey, e := getSubnetAPIKey(alias)
+	if requireRegistration {
+		fatalIf(probe.NewError(e), "")
+	}
+
 	return apiKey
 }
 
@@ -107,7 +136,7 @@ func validateClusterRegistered(alias string) string {
 // - given subsystem is not supported by the version of MinIO
 // - the given target doesn't exist in the config
 // - `enable` is set to `off`
-func isFeatureEnabled(alias string, subSys string, target string) bool {
+func isFeatureEnabled(alias, subSys, target string) bool {
 	client, err := newAdminClient(alias)
 	// Create a new MinIO Admin Client
 	fatalIf(err, "Unable to initialize admin connection.")
@@ -142,6 +171,13 @@ func isFeatureEnabled(alias string, subSys string, target string) bool {
 		}
 	}
 	return false
+}
+
+func toJSON(obj interface{}) string {
+	jsonBytes, e := json.MarshalIndent(obj, "", " ")
+	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
+
+	return string(jsonBytes)
 }
 
 // mainSupport is the handle for "mc support" command.

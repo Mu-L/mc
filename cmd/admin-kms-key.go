@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -22,6 +22,7 @@ import "github.com/minio/cli"
 var adminKMSKeySubcommands = []cli.Command{
 	adminKMSCreateKeyCmd,
 	adminKMSKeyStatusCmd,
+	adminKMSKeyListCmd,
 }
 
 var adminKMSKeyCmd = cli.Command{

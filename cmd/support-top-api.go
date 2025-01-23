@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2022 MinIO, Inc.
+// Copyright (c) 2015-2023 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -22,7 +22,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/minio/cli"
-	"github.com/minio/madmin-go"
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/mc/pkg/probe"
 )
 
@@ -51,7 +51,7 @@ var supportTopAPICmd = cli.Command{
 	Action:          mainSupportTopAPI,
 	OnUsageError:    onUsageError,
 	Before:          setGlobalsFromContext,
-	Flags:           append(supportTopAPIFlags, globalFlags...),
+	Flags:           append(supportTopAPIFlags, supportGlobalFlags...),
 	HideHelpCommand: true,
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
@@ -74,7 +74,7 @@ EXAMPLES:
 // checkSupportTopAPISyntax - validate all the passed arguments
 func checkSupportTopAPISyntax(ctx *cli.Context) {
 	if len(ctx.Args()) == 0 || len(ctx.Args()) > 1 {
-		cli.ShowCommandHelpAndExit(ctx, "api", 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 }
 
@@ -82,6 +82,8 @@ func mainSupportTopAPI(ctx *cli.Context) error {
 	checkSupportTopAPISyntax(ctx)
 
 	aliasedURL := ctx.Args().Get(0)
+	alias, _ := url2Alias(aliasedURL)
+	validateClusterRegistered(alias, false)
 
 	// Create a new MinIO Admin Client
 	client, err := newAdminClient(aliasedURL)
@@ -101,27 +103,27 @@ func mainSupportTopAPI(ctx *cli.Context) error {
 	// Start listening on all trace activity.
 	traceCh := client.ServiceTrace(ctxt, opts)
 
-	p := tea.NewProgram(initTraceUI())
+	filteredTraces := make(chan madmin.ServiceTraceInfo, 1)
+	ui := tea.NewProgram(initTraceStatsUI(false, 30, filteredTraces))
+	var te error
 	go func() {
-		for apiCallInfo := range traceCh {
-			if apiCallInfo.Err != nil {
-				fatalIf(probe.NewError(apiCallInfo.Err), "Unable to fetch top API events")
+		for t := range traceCh {
+			if t.Err != nil {
+				te = t.Err
+				ui.Kill()
+				return
 			}
-			if matchTrace(mopts, apiCallInfo) {
-				p.Send(topAPIResult{
-					apiCallInfo: apiCallInfo,
-				})
+			if mopts.matches(t) {
+				filteredTraces <- t
 			}
-			p.Send(topAPIResult{
-				apiCallInfo: madmin.ServiceTraceInfo{},
-			})
 		}
 	}()
-
-	if e := p.Start(); e != nil {
+	if _, e := ui.Run(); e != nil {
 		cancel()
-		fatalIf(probe.NewError(e).Trace(aliasedURL), "Unable to fetch top API events")
+		if te != nil {
+			e = te
+		}
+		fatalIf(probe.NewError(e).Trace(aliasedURL), "Unable to fetch http trace statistics")
 	}
-
 	return nil
 }

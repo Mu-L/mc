@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -24,7 +24,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/minio/cli"
 	"github.com/minio/minio-go/v7"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var retentionClearFlags = []cli.Flag{
@@ -52,7 +52,7 @@ var retentionClearFlags = []cli.Flag{
 
 var retentionClearCmd = cli.Command{
 	Name:         "clear",
-	Usage:        "clear retention for object(s)",
+	Usage:        "clear all retention settings on object(s)",
 	Action:       mainRetentionClear,
 	OnUsageError: onUsageError,
 	Before:       setGlobalsFromContext,
@@ -92,7 +92,7 @@ func parseClearRetentionArgs(cliCtx *cli.Context) (target, versionID string, tim
 	args := cliCtx.Args()
 
 	if len(args) != 1 {
-		cli.ShowCommandHelpAndExit(cliCtx, "clear", 1)
+		showCommandHelpAndExit(cliCtx, 1)
 	}
 
 	target = args[0]
@@ -114,8 +114,8 @@ func parseClearRetentionArgs(cliCtx *cli.Context) (target, versionID string, tim
 }
 
 // Clear Retention for one object/version or many objects within a given prefix, bypass governance is always enabled
-func clearRetention(ctx context.Context, target, versionID string, timeRef time.Time, withOlderVersions, isRecursive bool) error {
-	return applyRetention(ctx, lockOpClear, target, versionID, timeRef, withOlderVersions, isRecursive, "", 0, minio.Days, true)
+func clearRetention(ctx context.Context, target, versionID string, timeRef time.Time, withVersions, isRecursive bool) error {
+	return applyRetention(ctx, lockOpClear, target, versionID, timeRef, withVersions, isRecursive, "", 0, minio.Days, true)
 }
 
 func clearBucketLock(urlStr string) error {
@@ -132,7 +132,7 @@ func mainRetentionClear(cliCtx *cli.Context) error {
 
 	target, versionID, rewind, withVersions, recursive, bucketMode := parseClearRetentionArgs(cliCtx)
 
-	fatalIfBucketLockNotEnabled(ctx, target)
+	fatalIfBucketLockNotSupported(ctx, target)
 
 	if bucketMode {
 		return clearBucketLock(target)

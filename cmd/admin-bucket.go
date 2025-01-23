@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -33,6 +33,7 @@ var adminBucketCmd = cli.Command{
 	Flags:           globalFlags,
 	Subcommands:     adminBucketSubcommands,
 	HideHelpCommand: true,
+	Hidden:          true,
 }
 
 // mainAdminBucket is the handle for "mc admin bucket" command.

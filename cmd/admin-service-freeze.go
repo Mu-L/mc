@@ -22,7 +22,7 @@ import (
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var adminServiceFreezeCmd = cli.Command{
@@ -70,7 +70,7 @@ func (s serviceFreezeCommand) JSON() string {
 // checkAdminServiceFreezeSyntax - validate all the passed arguments
 func checkAdminServiceFreezeSyntax(ctx *cli.Context) {
 	if len(ctx.Args()) != 1 {
-		cli.ShowCommandHelpAndExit(ctx, "freeze", 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 }
 
@@ -90,7 +90,7 @@ func mainAdminServiceFreeze(ctx *cli.Context) error {
 	fatalIf(err, "Unable to initialize admin connection.")
 
 	// Freeze the specified MinIO server
-	fatalIf(probe.NewError(client.ServiceFreeze(globalContext)), "Unable to freeze the server.")
+	fatalIf(probe.NewError(client.ServiceFreezeV2(globalContext)), "Unable to freeze the server.")
 
 	// Success..
 	printMsg(serviceFreezeCommand{Status: "success", ServerURL: aliasedURL})

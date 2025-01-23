@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -21,8 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
+	"github.com/dustin/go-humanize"
 	"github.com/minio/cli"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio-go/v7/pkg/lifecycle"
@@ -30,51 +32,6 @@ import (
 )
 
 const defaultILMDateFormat string = "2006-01-02"
-
-// Align text in label to center, pad with spaces on either sides.
-func getCenterAligned(label string, maxLen int) string {
-	const toPadWith string = " "
-	lblLth := len(label)
-	if lblLth > 1 && lblLth%2 != 0 {
-		lblLth++
-	} else if lblLth == 1 {
-		lblLth = 2
-	}
-	length := (float64(maxLen - lblLth)) / float64(2)
-	rptLth := (int)(math.Floor(length / float64(len(toPadWith))))
-	leftRptLth := rptLth
-	rightRptLth := rptLth
-	if rptLth <= 0 {
-		leftRptLth = 1
-		rightRptLth = 0
-	}
-	output := strings.Repeat(toPadWith, leftRptLth) + label + strings.Repeat(toPadWith, rightRptLth)
-	return output
-}
-
-// Align text in label to left, pad with spaces.
-func getLeftAligned(label string, maxLen int) string {
-	const toPadWith string = " "
-	lblLth := len(label)
-	length := maxLen - lblLth
-	if length <= 0 {
-		return label
-	}
-	output := strings.Repeat(toPadWith, 1) + label + strings.Repeat(toPadWith, length-1)
-	return output
-}
-
-// Align text in label to right, pad with spaces.
-func getRightAligned(label string, maxLen int) string {
-	const toPadWith string = " "
-	lblLth := len(label)
-	length := maxLen - lblLth
-	if length <= 0 {
-		return label
-	}
-	output := strings.Repeat(toPadWith, length) + label
-	return output
-}
 
 // RemoveILMRule - Remove the ILM rule (with ilmID) from the configuration in XML that is provided.
 func RemoveILMRule(lfcCfg *lifecycle.Configuration, ilmID string) (*lifecycle.Configuration, *probe.Error) {
@@ -106,13 +63,15 @@ type LifecycleOptions struct {
 
 	Status *bool
 
-	Prefix         *string
-	Tags           *string
-	ExpiryDate     *string
-	ExpiryDays     *string
-	TransitionDate *string
-	TransitionDays *string
-	StorageClass   *string
+	Prefix                *string
+	Tags                  *string
+	ObjectSizeLessThan    *int64
+	ObjectSizeGreaterThan *int64
+	ExpiryDate            *string
+	ExpiryDays            *string
+	TransitionDate        *string
+	TransitionDays        *string
+	StorageClass          *string
 
 	ExpiredObjectDeleteMarker               *bool
 	NoncurrentVersionExpirationDays         *int
@@ -120,14 +79,60 @@ type LifecycleOptions struct {
 	NoncurrentVersionTransitionDays         *int
 	NewerNoncurrentTransitionVersions       *int
 	NoncurrentVersionTransitionStorageClass *string
+	ExpiredObjectAllversions                *bool
+}
+
+// Filter returns lifecycle.Filter appropriate for opts
+func (opts LifecycleOptions) Filter() lifecycle.Filter {
+	var f lifecycle.Filter
+	var tags []lifecycle.Tag
+	var predCount int
+	if opts.Tags != nil {
+		tags = extractILMTags(*opts.Tags)
+		predCount += len(tags)
+	}
+	var prefix string
+	if opts.Prefix != nil {
+		prefix = *opts.Prefix
+		predCount++
+	}
+
+	var szLt, szGt int64
+	if opts.ObjectSizeLessThan != nil {
+		szLt = *opts.ObjectSizeLessThan
+		predCount++
+	}
+
+	if opts.ObjectSizeGreaterThan != nil {
+		szGt = *opts.ObjectSizeGreaterThan
+		predCount++
+	}
+
+	if predCount >= 2 {
+		f.And = lifecycle.And{
+			Tags:                  tags,
+			Prefix:                prefix,
+			ObjectSizeLessThan:    szLt,
+			ObjectSizeGreaterThan: szGt,
+		}
+	} else {
+		// In a valid lifecycle rule filter at most one of the
+		// following will only be set.
+		f.Prefix = prefix
+		f.ObjectSizeGreaterThan = szGt
+		f.ObjectSizeLessThan = szLt
+		if len(tags) >= 1 {
+			f.Tag = tags[0]
+		}
+	}
+
+	return f
 }
 
 // ToILMRule creates lifecycle.Configuration based on LifecycleOptions
-func (opts LifecycleOptions) ToILMRule(config *lifecycle.Configuration) (lifecycle.Rule, *probe.Error) {
+func (opts LifecycleOptions) ToILMRule() (lifecycle.Rule, *probe.Error) {
 	var (
 		id, status string
-
-		filter lifecycle.Filter
 
 		nonCurrentVersionExpirationDays         lifecycle.ExpirationDays
 		newerNonCurrentExpirationVersions       int
@@ -138,14 +143,14 @@ func (opts LifecycleOptions) ToILMRule(config *lifecycle.Configuration) (lifecyc
 
 	id = opts.ID
 	status = func() string {
-		if opts.Status != nil && *opts.Status == false {
+		if opts.Status != nil && !*opts.Status {
 			return "Disabled"
 		}
 		// Generating a new ILM rule without explicit status is enabled
 		return "Enabled"
 	}()
 
-	expiry, err := parseExpiry(opts.ExpiryDate, opts.ExpiryDays, opts.ExpiredObjectDeleteMarker)
+	expiry, err := parseExpiry(opts.ExpiryDate, opts.ExpiryDays, opts.ExpiredObjectDeleteMarker, opts.ExpiredObjectAllversions)
 	if err != nil {
 		return lifecycle.Rule{}, err
 	}
@@ -153,23 +158,6 @@ func (opts LifecycleOptions) ToILMRule(config *lifecycle.Configuration) (lifecyc
 	transition, err := parseTransition(opts.StorageClass, opts.TransitionDate, opts.TransitionDays)
 	if err != nil {
 		return lifecycle.Rule{}, err
-	}
-
-	andVal := lifecycle.And{}
-	if opts.Tags != nil {
-		andVal.Tags = extractILMTags(*opts.Tags)
-	}
-
-	if opts.Prefix != nil {
-		filter.Prefix = *opts.Prefix
-	}
-
-	if len(andVal.Tags) > 0 {
-		filter.And = andVal
-		if opts.Prefix != nil {
-			filter.And.Prefix = *opts.Prefix
-		}
-		filter.Prefix = ""
 	}
 
 	if opts.NoncurrentVersionExpirationDays != nil {
@@ -190,7 +178,7 @@ func (opts LifecycleOptions) ToILMRule(config *lifecycle.Configuration) (lifecyc
 
 	newRule := lifecycle.Rule{
 		ID:         id,
-		RuleFilter: filter,
+		RuleFilter: opts.Filter(),
 		Status:     status,
 		Expiration: expiry,
 		Transition: transition,
@@ -222,6 +210,10 @@ func intPtr(i int) *int {
 	return &ptr
 }
 
+func int64Ptr(i int64) *int64 {
+	return &i
+}
+
 func boolPtr(b bool) *bool {
 	ptr := b
 	return &ptr
@@ -236,18 +228,21 @@ func GetLifecycleOptions(ctx *cli.Context) (LifecycleOptions, *probe.Error) {
 
 		prefix         *string
 		tags           *string
+		sizeLt         *int64
+		sizeGt         *int64
 		expiryDate     *string
 		expiryDays     *string
 		transitionDate *string
 		transitionDays *string
-		sc             *string
+		tier           *string
 
 		expiredObjectDeleteMarker         *bool
 		noncurrentVersionExpirationDays   *int
 		newerNoncurrentExpirationVersions *int
 		noncurrentVersionTransitionDays   *int
 		newerNoncurrentTransitionVersions *int
-		noncurrentSC                      *string
+		noncurrentTier                    *string
+		expiredObjectAllversions          *bool
 	)
 
 	id = ctx.String("id")
@@ -277,16 +272,49 @@ func GetLifecycleOptions(ctx *cli.Context) (LifecycleOptions, *probe.Error) {
 		}
 	}
 
+	expiryRulesCount := 0
+
+	if ctx.IsSet("size-lt") {
+		szStr := ctx.String("size-lt")
+		szLt, err := humanize.ParseBytes(szStr)
+		if err != nil || szLt > math.MaxInt64 {
+			return LifecycleOptions{}, probe.NewError(fmt.Errorf("size-lt value %s is invalid", szStr))
+		}
+
+		sizeLt = int64Ptr(int64(szLt))
+	}
+	if ctx.IsSet("size-gt") {
+		szStr := ctx.String("size-gt")
+		szGt, err := humanize.ParseBytes(szStr)
+		if err != nil || szGt > math.MaxInt64 {
+			return LifecycleOptions{}, probe.NewError(fmt.Errorf("size-gt value %s is invalid", szStr))
+		}
+		sizeGt = int64Ptr(int64(szGt))
+	}
+
+	// For backward-compatibility
 	if ctx.IsSet("storage-class") {
-		sc = strPtr(strings.ToUpper(ctx.String("storage-class")))
+		tier = strPtr(strings.ToUpper(ctx.String("storage-class")))
 	}
 	if ctx.IsSet("noncurrentversion-transition-storage-class") {
-		noncurrentSC = strPtr(strings.ToUpper(ctx.String("noncurrentversion-transition-storage-class")))
+		noncurrentTier = strPtr(strings.ToUpper(ctx.String("noncurrentversion-transition-storage-class")))
 	}
-	if sc != nil && !ctx.IsSet("transition-days") && !ctx.IsSet("transition-date") {
+	if ctx.IsSet("tier") {
+		tier = strPtr(strings.ToUpper(ctx.String("tier")))
+	}
+	if f := "transition-tier"; ctx.IsSet(f) {
+		tier = strPtr(strings.ToUpper(ctx.String(f)))
+	}
+	if ctx.IsSet("noncurrentversion-tier") {
+		noncurrentTier = strPtr(strings.ToUpper(ctx.String("noncurrentversion-tier")))
+	}
+	if f := "noncurrent-transition-tier"; ctx.IsSet(f) {
+		noncurrentTier = strPtr(strings.ToUpper(ctx.String(f)))
+	}
+	if tier != nil && !ctx.IsSet("transition-days") && !ctx.IsSet("transition-date") {
 		return LifecycleOptions{}, probe.NewError(errors.New("transition-date or transition-days must be set"))
 	}
-	if noncurrentSC != nil && !ctx.IsSet("noncurrentversion-transition-days") {
+	if noncurrentTier != nil && !ctx.IsSet("noncurrentversion-transition-days") && !ctx.IsSet("noncurrent-transition-days") {
 		return LifecycleOptions{}, probe.NewError(errors.New("noncurrentversion-transition-days must be set"))
 	}
 	// for MinIO transition storage-class is same as label defined on
@@ -295,10 +323,15 @@ func GetLifecycleOptions(ctx *cli.Context) (LifecycleOptions, *probe.Error) {
 		tags = strPtr(ctx.String("tags"))
 	}
 	if ctx.IsSet("expiry-date") {
+		expiryRulesCount++
 		expiryDate = strPtr(ctx.String("expiry-date"))
 	}
 	if ctx.IsSet("expiry-days") {
+		expiryRulesCount++
 		expiryDays = strPtr(ctx.String("expiry-days"))
+	}
+	if f := "expire-days"; ctx.IsSet(f) {
+		expiryDays = strPtr(ctx.String(f))
 	}
 	if ctx.IsSet("transition-date") {
 		transitionDate = strPtr(ctx.String("transition-date"))
@@ -309,17 +342,45 @@ func GetLifecycleOptions(ctx *cli.Context) (LifecycleOptions, *probe.Error) {
 	if ctx.IsSet("expired-object-delete-marker") {
 		expiredObjectDeleteMarker = boolPtr(ctx.Bool("expired-object-delete-marker"))
 	}
+	if f := "expire-delete-marker"; ctx.IsSet(f) {
+		expiryRulesCount++
+		expiredObjectDeleteMarker = boolPtr(ctx.Bool(f))
+	}
 	if ctx.IsSet("noncurrentversion-expiration-days") {
 		noncurrentVersionExpirationDays = intPtr(ctx.Int("noncurrentversion-expiration-days"))
+	}
+	if f := "noncurrent-expire-days"; ctx.IsSet(f) {
+		ndaysStr := ctx.String(f)
+		ndays, err := strconv.Atoi(ndaysStr)
+		if err != nil {
+			return LifecycleOptions{}, probe.NewError(fmt.Errorf("failed to parse %s: %v", f, err))
+		}
+		noncurrentVersionExpirationDays = &ndays
 	}
 	if ctx.IsSet("newer-noncurrentversions-expiration") {
 		newerNoncurrentExpirationVersions = intPtr(ctx.Int("newer-noncurrentversions-expiration"))
 	}
+	if f := "noncurrent-expire-newer"; ctx.IsSet(f) {
+		newerNoncurrentExpirationVersions = intPtr(ctx.Int(f))
+	}
 	if ctx.IsSet("noncurrentversion-transition-days") {
 		noncurrentVersionTransitionDays = intPtr(ctx.Int("noncurrentversion-transition-days"))
 	}
+	if f := "noncurrent-transition-days"; ctx.IsSet(f) {
+		noncurrentVersionTransitionDays = intPtr(ctx.Int(f))
+	}
 	if ctx.IsSet("newer-noncurrentversions-transition") {
 		newerNoncurrentTransitionVersions = intPtr(ctx.Int("newer-noncurrentversions-transition"))
+	}
+	if f := "noncurrent-transition-newer"; ctx.IsSet(f) {
+		newerNoncurrentTransitionVersions = intPtr(ctx.Int(f))
+	}
+	if ctx.IsSet("expire-all-object-versions") {
+		expiredObjectAllversions = boolPtr(ctx.Bool("expire-all-object-versions"))
+	}
+
+	if expiryRulesCount > 1 {
+		return LifecycleOptions{}, probe.NewError(errors.New("only one of expiry-date, expiry-days and expire-delete-marker can be used in a single rule. Try adding multiple rules to achieve the desired effect"))
 	}
 
 	return LifecycleOptions{
@@ -327,17 +388,20 @@ func GetLifecycleOptions(ctx *cli.Context) (LifecycleOptions, *probe.Error) {
 		Status:                                  status,
 		Prefix:                                  prefix,
 		Tags:                                    tags,
+		ObjectSizeLessThan:                      sizeLt,
+		ObjectSizeGreaterThan:                   sizeGt,
 		ExpiryDate:                              expiryDate,
 		ExpiryDays:                              expiryDays,
 		TransitionDate:                          transitionDate,
 		TransitionDays:                          transitionDays,
-		StorageClass:                            sc,
+		StorageClass:                            tier,
 		ExpiredObjectDeleteMarker:               expiredObjectDeleteMarker,
 		NoncurrentVersionExpirationDays:         noncurrentVersionExpirationDays,
 		NewerNoncurrentExpirationVersions:       newerNoncurrentExpirationVersions,
 		NoncurrentVersionTransitionDays:         noncurrentVersionTransitionDays,
 		NewerNoncurrentTransitionVersions:       newerNoncurrentTransitionVersions,
-		NoncurrentVersionTransitionStorageClass: noncurrentSC,
+		NoncurrentVersionTransitionStorageClass: noncurrentTier,
+		ExpiredObjectAllversions:                expiredObjectAllversions,
 	}, nil
 }
 
@@ -380,6 +444,9 @@ func ApplyRuleFields(dest *lifecycle.Rule, opts LifecycleOptions) *probe.Error {
 		dest.Expiration.DeleteMarker = lifecycle.ExpireDeleteMarker(*opts.ExpiredObjectDeleteMarker)
 		dest.Expiration.Days = 0
 		dest.Expiration.Date = lifecycle.ExpirationDate{}
+	}
+	if opts.ExpiredObjectAllversions != nil {
+		dest.Expiration.DeleteAll = lifecycle.ExpirationBoolean(*opts.ExpiredObjectAllversions)
 	}
 
 	if opts.TransitionDate != nil {

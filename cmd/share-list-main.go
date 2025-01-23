@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -30,6 +30,7 @@ var shareListFlags = []cli.Flag{}
 // Share documents via URL.
 var shareList = cli.Command{
 	Name:         "list",
+	ShortName:    "ls",
 	Usage:        "list previously shared objects",
 	Action:       mainShareList,
 	OnUsageError: onUsageError,
@@ -58,7 +59,7 @@ EXAMPLES:
 func checkShareListSyntax(ctx *cli.Context) {
 	args := ctx.Args()
 	if !args.Present() || (args.First() != "upload" && args.First() != "download") {
-		cli.ShowCommandHelpAndExit(ctx, "list", 1) // last argument is exit code.
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code.
 	}
 }
 
@@ -91,7 +92,7 @@ func doShareList(cmd string) *probe.Error {
 
 	// Print previously shared entries.
 	for shareURL, share := range shareDB.Shares {
-		printMsg(shareMesssage{
+		printMsg(shareMessage{
 			ObjectURL:   share.URL,
 			ShareURL:    shareURL,
 			TimeLeft:    share.Expiry - time.Since(share.Date),

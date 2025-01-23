@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -79,7 +79,7 @@ func shellQuote(s string) string {
 func checkShareUploadSyntax(ctx *cli.Context) {
 	args := ctx.Args()
 	if !args.Present() {
-		cli.ShowCommandHelpAndExit(ctx, "upload", 1) // last argument is exit code.
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code.
 	}
 
 	// Set command flags from context.
@@ -135,7 +135,7 @@ func makeCurlCmd(key, postURL string, isRecursive bool, uploadInfo map[string]st
 }
 
 // save shared URL to disk.
-func saveSharedURL(objectURL string, shareURL string, expiry time.Duration, contentType string) *probe.Error {
+func saveSharedURL(objectURL, shareURL string, expiry time.Duration, contentType string) *probe.Error {
 	// Load previously saved upload-shares.
 	shareDB := newShareDBV1()
 	if err := shareDB.Load(getShareUploadsFile()); err != nil {
@@ -157,7 +157,7 @@ func doShareUploadURL(ctx context.Context, objectURL string, isRecursive bool, e
 	}
 
 	// Generate pre-signed access info.
-	shareURL, uploadInfo, err := clnt.ShareUpload(context.Background(), isRecursive, expiry, contentType)
+	shareURL, uploadInfo, err := clnt.ShareUpload(ctx, isRecursive, expiry, contentType)
 	if err != nil {
 		return err.Trace(objectURL, "expiry="+expiry.String(), "contentType="+contentType)
 	}
@@ -171,7 +171,7 @@ func doShareUploadURL(ctx context.Context, objectURL string, isRecursive bool, e
 		return err.Trace(objectURL)
 	}
 
-	printMsg(shareMesssage{
+	printMsg(shareMessage{
 		ObjectURL:   objectURL,
 		ShareURL:    curlCmd,
 		TimeLeft:    expiry,

@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -20,16 +20,12 @@ package cmd
 import (
 	"github.com/fatih/color"
 	"github.com/minio/cli"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var ilmSubcommands = []cli.Command{
-	ilmAddCmd,
-	ilmEditCmd,
-	ilmLsCmd,
-	ilmRmCmd,
-	ilmExportCmd,
-	ilmImportCmd,
+	ilmRuleCmd,
+	ilmTierCmd,
 	ilmRestoreCmd,
 }
 
@@ -40,7 +36,7 @@ var ilmCmd = cli.Command{
 	Before:          setGlobalsFromContext,
 	Flags:           globalFlags,
 	HideHelpCommand: true,
-	Subcommands:     ilmSubcommands,
+	Subcommands:     append(ilmSubcommands, ilmDepCmds...),
 }
 
 const (

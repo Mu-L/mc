@@ -22,13 +22,13 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	humanize "github.com/dustin/go-humanize"
+	"github.com/dustin/go-humanize"
 	"github.com/minio/cli"
-	"github.com/minio/madmin-go"
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/mc/pkg/probe"
 )
 
-func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
+func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string, outCh chan<- PerfTestResult) error {
 	client, perr := newAdminClient(aliasedURL)
 	if perr != nil {
 		fatalIf(perr.Trace(aliasedURL), "Unable to initialize admin client.")
@@ -43,7 +43,7 @@ func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
 		fatalIf(probe.NewError(e), "Unable to parse blocksize")
 		return nil
 	}
-	if blocksize < 0 {
+	if blocksize <= 0 {
 		fatalIf(errInvalidArgument(), "blocksize cannot be <= 0")
 		return nil
 	}
@@ -53,7 +53,7 @@ func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
 		fatalIf(probe.NewError(e), "Unable to parse filesize")
 		return nil
 	}
-	if filesize < 0 {
+	if filesize <= 0 {
 		fatalIf(errInvalidArgument(), "filesize cannot be <= 0")
 		return nil
 	}
@@ -62,17 +62,18 @@ func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
 
 	resultCh, e := client.DriveSpeedtest(ctxt, madmin.DriveSpeedTestOpts{
 		Serial:    serial,
-		BlockSize: uint64(blocksize),
-		FileSize:  uint64(filesize),
+		BlockSize: blocksize,
+		FileSize:  filesize,
 	})
 
 	if globalJSON {
 		if e != nil {
-			printMsg(speedTestResult{
-				Type:  driveSpeedTest,
+			printMsg(convertPerfResult(PerfTestResult{
+				Type:  DrivePerfTest,
 				Err:   e.Error(),
 				Final: true,
-			})
+			}))
+
 			return nil
 		}
 
@@ -82,11 +83,11 @@ func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
 				results = append(results, result)
 			}
 		}
-		printMsg(speedTestResult{
-			Type:        driveSpeedTest,
+		printMsg(convertPerfResult(PerfTestResult{
+			Type:        DrivePerfTest,
 			DriveResult: results,
 			Final:       true,
-		})
+		}))
 
 		return nil
 	}
@@ -95,7 +96,7 @@ func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
 
 	p := tea.NewProgram(initSpeedTestUI())
 	go func() {
-		if e := p.Start(); e != nil {
+		if _, e := p.Run(); e != nil {
 			os.Exit(1)
 		}
 		close(done)
@@ -103,10 +104,15 @@ func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
 
 	go func() {
 		if e != nil {
-			printMsg(speedTestResult{
-				Type: driveSpeedTest,
-				Err:  e.Error(),
-			})
+			r := PerfTestResult{
+				Type:  DrivePerfTest,
+				Err:   e.Error(),
+				Final: true,
+			}
+			p.Send(r)
+			if outCh != nil {
+				outCh <- r
+			}
 			return
 		}
 
@@ -115,17 +121,21 @@ func mainAdminSpeedTestDrive(ctx *cli.Context, aliasedURL string) error {
 			if result.Version != "" {
 				results = append(results, result)
 			} else {
-				p.Send(speedTestResult{
-					Type:        driveSpeedTest,
+				p.Send(PerfTestResult{
+					Type:        DrivePerfTest,
 					DriveResult: []madmin.DriveSpeedTestResult{},
 				})
 			}
 		}
-		p.Send(speedTestResult{
-			Type:        driveSpeedTest,
+		r := PerfTestResult{
+			Type:        DrivePerfTest,
 			DriveResult: results,
 			Final:       true,
-		})
+		}
+		p.Send(r)
+		if outCh != nil {
+			outCh <- r
+		}
 	}()
 
 	<-done

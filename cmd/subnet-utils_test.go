@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -23,7 +23,7 @@ import (
 )
 
 func TestSubnetBaseURL(t *testing.T) {
-	sbu := subnetBaseURL()
+	sbu := SubnetBaseURL()
 	u, err := url.ParseRequestURI(sbu)
 	if err != nil {
 		t.Fatal(err)

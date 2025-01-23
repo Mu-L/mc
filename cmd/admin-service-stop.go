@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -22,7 +22,7 @@ import (
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var adminServiceStopCmd = cli.Command{
@@ -32,6 +32,7 @@ var adminServiceStopCmd = cli.Command{
 	OnUsageError: onUsageError,
 	Before:       setGlobalsFromContext,
 	Flags:        globalFlags,
+	Hidden:       true, // this command is hidden on purpose, please do not enable it.
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
 
@@ -69,7 +70,7 @@ func (s serviceStopMessage) JSON() string {
 // checkAdminServiceStopSyntax - validate all the passed arguments
 func checkAdminServiceStopSyntax(ctx *cli.Context) {
 	if len(ctx.Args()) == 0 || len(ctx.Args()) > 2 {
-		cli.ShowCommandHelpAndExit(ctx, "stop", 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 }
 
@@ -88,7 +89,7 @@ func mainAdminServiceStop(ctx *cli.Context) error {
 	fatalIf(err, "Unable to initialize admin connection.")
 
 	// Stop the specified MinIO server
-	fatalIf(probe.NewError(client.ServiceStop(globalContext)), "Unable to stop the server.")
+	fatalIf(probe.NewError(client.ServiceStopV2(globalContext)), "Unable to stop the server.")
 
 	// Success..
 	printMsg(serviceStopMessage{Status: "success", ServerURL: aliasedURL})

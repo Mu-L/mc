@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -45,7 +45,7 @@ func prepareUpdateMessage(downloadURL string, older time.Duration) string {
 }
 
 // colorizeUpdateMessage - inspired from Yeoman project npm package https://github.com/yeoman/update-notifier
-func colorizeUpdateMessage(updateString string, newerThan string) string {
+func colorizeUpdateMessage(updateString, newerThan string) string {
 	msgLine1Fmt := " You are running an older version of mc released %s "
 	msgLine2Fmt := " Update: %s "
 

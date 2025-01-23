@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -113,6 +113,12 @@ var globalProfilers []profiler
 // Enable profiling supported modes are [cpu, mem, block, goroutine].
 func enableProfilers(outputFolder string, profilers []string) error {
 	now := time.Now().Format("2006-01-02T15-04-05")
+
+	if _, e := os.Stat(outputFolder); e != nil {
+		if e := os.MkdirAll(outputFolder, 0o700); e != nil {
+			return e
+		}
+	}
 
 	for _, profilerName := range profilers {
 		outputFile := path.Join(outputFolder, profilerName+"."+now)

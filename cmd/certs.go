@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/certs"
+	"github.com/minio/pkg/v3/certs"
 )
 
 // getCertsDir - return the full path of certs dir

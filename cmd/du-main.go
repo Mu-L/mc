@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ import (
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 // du specific flags.
@@ -61,7 +62,7 @@ var duCmd = cli.Command{
 	Action:       mainDu,
 	OnUsageError: onUsageError,
 	Before:       setGlobalsFromContext,
-	Flags:        append(append(duFlags, ioFlags...), globalFlags...),
+	Flags:        append(duFlags, globalFlags...),
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
 
@@ -71,8 +72,6 @@ USAGE:
 FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
-ENVIRONMENT VARIABLES:
-  MC_ENCRYPT_KEY: list of comma delimited prefix=secret values
 
 EXAMPLES:
   1. Summarize disk usage of 'jazz-songs' bucket recursively.
@@ -120,21 +119,24 @@ func (r duMessage) JSON() string {
 	return string(msgBytes)
 }
 
-func du(ctx context.Context, urlStr string, timeRef time.Time, withVersions bool, depth int, encKeyDB map[string][]prefixSSEPair) (sz, objs int64, err error) {
+func du(ctx context.Context, urlStr string, timeRef time.Time, withVersions bool, depth int) (sz, objs int64, err error) {
 	targetAlias, targetURL, _ := mustExpandAlias(urlStr)
+
 	if !strings.HasSuffix(targetURL, "/") {
 		targetURL += "/"
 	}
 
 	clnt, pErr := newClientFromAlias(targetAlias, targetURL)
 	if pErr != nil {
-		errorIf(pErr.Trace(urlStr), "Failed to summarize disk usage `"+urlStr+"`.")
+		errorIf(pErr.Trace(urlStr), "Failed to summarize disk usage `%s`.", urlStr)
 		return 0, 0, exitStatus(globalErrorExitStatus) // End of journey.
 	}
 
 	// No disk usage details below this level,
 	// just do a recursive listing
 	recursive := depth == 1
+
+	targetAbsolutePath := path.Clean(clnt.GetURL().String())
 
 	contentCh := clnt.List(ctx, ListOptions{
 		TimeRef:           timeRef,
@@ -154,10 +156,11 @@ func du(ctx context.Context, urlStr string, timeRef time.Time, withVersions bool
 				errorIf(content.Err.Trace(clnt.GetURL().String()), "Unable to list folder.")
 				continue
 			}
-			errorIf(content.Err.Trace(urlStr), "Failed to find disk usage of `"+urlStr+"` recursively.")
+			errorIf(content.Err.Trace(urlStr), "Failed to find disk usage of `%s` recursively.", urlStr)
 			return 0, 0, exitStatus(globalErrorExitStatus)
 		}
-		if content.URL.String() == targetURL {
+
+		if content.URL.Path == targetAbsolutePath {
 			continue
 		}
 
@@ -171,24 +174,24 @@ func du(ctx context.Context, urlStr string, timeRef time.Time, withVersions bool
 			if targetAlias != "" {
 				subDirAlias = targetAlias + "/" + content.URL.Path
 			}
-			used, n, err := du(ctx, subDirAlias, timeRef, withVersions, depth, encKeyDB)
+			used, n, err := du(ctx, subDirAlias, timeRef, withVersions, depth)
 			if err != nil {
 				return 0, 0, err
 			}
 			size += used
 			objects += n
 		} else {
-			size += content.Size
-			if !content.IsDeleteMarker {
+			if !content.IsDeleteMarker && !content.Type.IsDir() {
+				size += content.Size
 				objects++
 			}
 		}
 	}
 
 	if depth != 0 {
-		u, err := url.Parse(targetURL)
-		if err != nil {
-			panic(err)
+		u, e := url.Parse(targetURL)
+		if e != nil {
+			panic(e)
 		}
 
 		printMsg(duMessage{
@@ -206,7 +209,7 @@ func du(ctx context.Context, urlStr string, timeRef time.Time, withVersions bool
 // main for du command.
 func mainDu(cliCtx *cli.Context) error {
 	if !cliCtx.Args().Present() {
-		cli.ShowCommandHelpAndExit(cliCtx, "du", 1)
+		showCommandHelpAndExit(cliCtx, 1)
 	}
 
 	// Set colors.
@@ -217,10 +220,6 @@ func mainDu(cliCtx *cli.Context) error {
 
 	ctx, cancelRm := context.WithCancel(globalContext)
 	defer cancelRm()
-
-	// Parse encryption keys per command.
-	encKeyDB, err := getEncKeys(cliCtx)
-	fatalIf(err, "Unable to parse encryption keys.")
 
 	// du specific flags.
 	depth := cliCtx.Int("depth")
@@ -238,12 +237,14 @@ func mainDu(cliCtx *cli.Context) error {
 	timeRef := parseRewindFlag(cliCtx.String("rewind"))
 
 	var duErr error
+	var isDir bool
 	for _, urlStr := range cliCtx.Args() {
-		if !isAliasURLDir(ctx, urlStr, nil, time.Time{}) {
+		isDir, _ = isAliasURLDir(ctx, urlStr, nil, time.Time{}, false)
+		if !isDir {
 			fatalIf(errInvalidArgument().Trace(urlStr), fmt.Sprintf("Source `%s` is not a folder. Only folders are supported by 'du' command.", urlStr))
 		}
 
-		if _, _, err := du(ctx, urlStr, timeRef, withVersions, depth, encKeyDB); duErr == nil {
+		if _, _, err := du(ctx, urlStr, timeRef, withVersions, depth); duErr == nil {
 			duErr = err
 		}
 	}

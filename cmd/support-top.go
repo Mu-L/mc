@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2023 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -21,8 +21,10 @@ import "github.com/minio/cli"
 
 var supportTopSubcommands = []cli.Command{
 	supportTopAPICmd,
+	supportTopDriveCmd,
 	supportTopLocksCmd,
-	supportTopDiskCmd,
+	supportTopNetCmd,
+	supportTopRPCCmd,
 }
 
 var supportTopCmd = cli.Command{

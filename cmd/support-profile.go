@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -18,43 +18,74 @@
 package cmd
 
 import (
+	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/minio/cli"
-	"github.com/minio/madmin-go"
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio-go/v7/pkg/set"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 // profile command flags.
 var (
-	profileFlags = []cli.Flag{
+	profileFlags = append([]cli.Flag{
 		cli.IntFlag{
 			Name:  "duration",
-			Usage: "start profiling for the specified duration in seconds",
+			Usage: "profile for the specified duration in seconds",
 			Value: 10,
 		},
 		cli.StringFlag{
 			Name:  "type",
 			Usage: "profiler type, possible values are 'cpu', 'cpuio', 'mem', 'block', 'mutex', 'trace', 'threads' and 'goroutines'",
-			Value: "cpu,mem,block,mutex,threads,goroutines",
+			Value: "cpu,mem,block,mutex,goroutines",
 		},
-	}
+	}, subnetCommonFlags...)
 )
+
+const profileFile = "profile.zip"
+
+type supportProfileMessage struct {
+	Status string `json:"status"`
+	File   string `json:"file,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// Colorized message for console printing.
+func (s supportProfileMessage) String() string {
+	var msg string
+	if s.Error != "" {
+		errMsg := fmt.Sprintln("Unable to upload profile file to SUBNET: ", s.Error)
+		msg := console.Colorize(supportErrorMsgTag, errMsg)
+		infoMsg := fmt.Sprintf("Profiling data saved locally at '%s'", profileFile)
+		msg += console.Colorize(supportSuccessMsgTag, infoMsg)
+		return msg
+	}
+
+	if globalAirgapped {
+		msg = fmt.Sprintf("Profiling data saved successfully at %s", s.File)
+	} else {
+		msg = "Profiling data uploaded to SUBNET successfully"
+	}
+	return console.Colorize(supportSuccessMsgTag, msg)
+}
+
+// JSON jsonified proxy remove message
+func (s supportProfileMessage) JSON() string {
+	return toJSON(s)
+}
 
 var supportProfileCmd = cli.Command{
 	Name:            "profile",
-	Usage:           "generate profile data for debugging",
+	Usage:           "upload profile data for debugging",
 	Action:          mainSupportProfile,
 	OnUsageError:    onUsageError,
 	Before:          setGlobalsFromContext,
-	Flags:           append(profileFlags, globalFlags...),
+	Flags:           profileFlags,
 	HideHelpCommand: true,
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
@@ -66,14 +97,17 @@ FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
 EXAMPLES:
-  1. Profile CPU for 10 seconds.
-     {{.Prompt}} {{.HelpName}} --type cpu myminio/
+  1. Profile CPU for 10 seconds on cluster with alias 'myminio' and upload results to SUBNET
+     {{.Prompt}} {{.HelpName}} --type cpu myminio
 
-  2. Profile CPU, Memory, Goroutines for 10 seconds.
-     {{.Prompt}} {{.HelpName}} --type cpu,mem,goroutines myminio/
+  2. Profile CPU, Memory, Goroutines for 10 seconds on cluster with alias 'myminio' and upload results to SUBNET
+     {{.Prompt}} {{.HelpName}} --type cpu,mem,goroutines myminio
 
-  3. Profile CPU, Memory, Goroutines for 10 minutes.
-     {{.Prompt}} {{.HelpName}} --type cpu,mem,goroutines --duration 600 myminio/
+  3. Profile CPU, Memory, Goroutines for 10 minutes on cluster with alias 'myminio' and upload results to SUBNET
+     {{.Prompt}} {{.HelpName}} --type cpu,mem,goroutines --duration 600 myminio
+
+  4. Profile CPU for 10 seconds on cluster with alias 'myminio', save and upload to SUBNET manually
+     {{.Prompt}} {{.HelpName}} --type cpu --airgap myminio
 `,
 }
 
@@ -85,7 +119,9 @@ func checkAdminProfileSyntax(ctx *cli.Context) {
 		string(madmin.ProfilerTrace),
 		string(madmin.ProfilerThreads),
 		string(madmin.ProfilerGoroutines),
-		string(madmin.ProfilerCPUIO))
+		string(madmin.ProfilerCPUIO),
+		string(madmin.ProfilerRuntime),
+	)
 	// Check if the provided profiler type is known and supported
 	profilers := strings.Split(strings.ToLower(ctx.String("type")), ",")
 	for _, profiler := range profilers {
@@ -97,11 +133,11 @@ func checkAdminProfileSyntax(ctx *cli.Context) {
 		}
 	}
 	if len(ctx.Args()) != 1 {
-		cli.ShowCommandHelpAndExit(ctx, "profile", 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 
-	if ctx.Int("duration") < 10 {
-		fatal(errDummy().Trace(), "profiling must be run for atleast 10 seconds")
+	if ctx.Int("duration") < 1 {
+		fatal(errDummy().Trace(), "for any useful profiling one must run it for at least 1 second")
 	}
 }
 
@@ -110,31 +146,31 @@ func checkAdminProfileSyntax(ctx *cli.Context) {
 // working directory is a different partition. To allow all situations to
 // be handled appropriately use this function instead of os.Rename()
 func moveFile(sourcePath, destPath string) error {
-	inputFile, err := os.Open(sourcePath)
-	if err != nil {
-		return err
+	inputFile, e := os.Open(sourcePath)
+	if e != nil {
+		return e
 	}
 
-	outputFile, err := os.Create(destPath)
-	if err != nil {
+	outputFile, e := os.Create(destPath)
+	if e != nil {
 		inputFile.Close()
-		return err
+		return e
 	}
 	defer outputFile.Close()
 
-	_, err = io.Copy(outputFile, inputFile)
-	inputFile.Close()
-	if err != nil {
-		return err
+	if _, e = io.Copy(outputFile, inputFile); e != nil {
+		inputFile.Close()
+		return e
 	}
 
 	// The copy was successful, so now delete the original file
+	inputFile.Close()
 	return os.Remove(sourcePath)
 }
 
-func getProfileData(data io.ReadCloser) string {
+func saveProfileFile(data io.ReadCloser) {
 	// Create profile zip file
-	tmpFile, e := ioutil.TempFile("", "mc-profile-")
+	tmpFile, e := os.CreateTemp("", "mc-profile-")
 	fatalIf(probe.NewError(e), "Unable to download profile data.")
 
 	// Copy zip content to target download file
@@ -145,45 +181,88 @@ func getProfileData(data io.ReadCloser) string {
 	data.Close()
 	tmpFile.Close()
 
-	downloadPath := "profile.zip"
-	downloadedFile := downloadPath + "." + time.Now().Format(dateTimeFormatFilename)
+	downloadedFile := profileFile + "." + time.Now().Format(dateTimeFormatFilename)
 
-	fi, e := os.Stat(downloadPath)
+	fi, e := os.Stat(profileFile)
 	if e == nil && !fi.IsDir() {
-		e = moveFile(downloadPath, downloadedFile)
+		e = moveFile(profileFile, downloadedFile)
 		fatalIf(probe.NewError(e), "Unable to create a backup of profile.zip")
 	} else {
 		if !os.IsNotExist(e) {
 			fatal(probe.NewError(e), "Unable to save profile data")
 		}
 	}
-	fatalIf(probe.NewError(moveFile(tmpFile.Name(), downloadPath)), "Unable to save profile data")
-	return downloadPath
+	fatalIf(probe.NewError(moveFile(tmpFile.Name(), profileFile)), "Unable to save profile data")
 }
 
 // mainSupportProfile is the handle for "mc support profile" command.
 func mainSupportProfile(ctx *cli.Context) error {
 	// Check for command syntax
 	checkAdminProfileSyntax(ctx)
-	// Get the alias parameter from cli
-	args := ctx.Args()
-	aliasedURL := args.Get(0)
 
+	setSuccessMessageColor()
+	setErrorMessageColor()
+
+	// Get the alias parameter from cli
+	aliasedURL := ctx.Args().Get(0)
+	alias, apiKey := initSubnetConnectivity(ctx, aliasedURL, true)
+	if len(apiKey) == 0 {
+		// api key not passed as flag. Check that the cluster is registered.
+		apiKey = validateClusterRegistered(alias, true)
+	}
+
+	// Create a new MinIO Admin Client
+	client := getClient(aliasedURL)
+
+	// Main execution
+	execSupportProfile(ctx, client, alias, apiKey)
+	return nil
+}
+
+func execSupportProfile(ctx *cli.Context, client *madmin.AdminClient, alias, apiKey string) {
+	var reqURL string
+	var headers map[string]string
 	profilers := ctx.String("type")
 	duration := ctx.Int("duration")
 
-	// Create a new MinIO Admin Client
-	client, err := newAdminClient(aliasedURL)
-	if err != nil {
-		fatalIf(err.Trace(aliasedURL), "Unable to initialize admin client")
-		return nil
+	if !globalAirgapped {
+		// Retrieve subnet credentials (login/license) beforehand as
+		// it can take a long time to fetch the profile data
+		uploadURL := SubnetUploadURL("profile")
+		reqURL, headers = prepareSubnetUploadURL(uploadURL, alias, apiKey)
 	}
 
-	console.Infof("Profiling '%s' for %d seconds... ", aliasedURL, duration)
+	if !globalJSON {
+		console.Infof("Profiling '%s' for %d seconds... \n", alias, duration)
+	}
 	data, e := client.Profile(globalContext, madmin.ProfilerType(profilers), time.Second*time.Duration(duration))
-
 	fatalIf(probe.NewError(e), "Unable to save profile data")
-	clr := color.New(color.FgGreen, color.Bold)
-	clr.Printf("saved successfully at '%s'\n", getProfileData(data))
-	return nil
+
+	saveProfileFile(data)
+
+	if !globalAirgapped {
+		_, e = (&SubnetFileUploader{
+			alias:             alias,
+			FilePath:          profileFile,
+			ReqURL:            reqURL,
+			Headers:           headers,
+			DeleteAfterUpload: true,
+		}).UploadFileToSubnet()
+		if e != nil {
+			printMsg(supportProfileMessage{
+				Status: "error",
+				Error:  e.Error(),
+				File:   profileFile,
+			})
+			return
+		}
+		printMsg(supportProfileMessage{
+			Status: "success",
+		})
+	} else {
+		printMsg(supportProfileMessage{
+			Status: "success",
+			File:   profileFile,
+		})
+	}
 }

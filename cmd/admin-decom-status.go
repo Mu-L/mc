@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -27,7 +27,7 @@ import (
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var adminDecommissionStatusCmd = cli.Command{
@@ -57,7 +57,7 @@ EXAMPLES:
 // checkAdminDecommissionStatusSyntax - validate all the passed arguments
 func checkAdminDecommissionStatusSyntax(ctx *cli.Context) {
 	if len(ctx.Args()) > 2 || len(ctx.Args()) == 0 {
-		cli.ShowCommandHelpAndExit(ctx, ctx.Command.Name, 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 }
 
@@ -96,10 +96,10 @@ func mainAdminDecommissionStatus(ctx *cli.Context) error {
 			usedStart := (poolStatus.Decommission.TotalSize - poolStatus.Decommission.StartSize)
 			usedCurrent := (poolStatus.Decommission.TotalSize - poolStatus.Decommission.CurrentSize)
 
-			if usedStart > usedCurrent {
-				duration := uint64(time.Since(poolStatus.Decommission.StartTime).Seconds())
+			duration := float64(time.Since(poolStatus.Decommission.StartTime)) / float64(time.Second)
+			if usedStart > usedCurrent && duration > 10 {
 				copied := uint64(usedStart - usedCurrent)
-				speed := copied / duration
+				speed := uint64(float64(copied) / duration)
 				msg = "Decommissioning rate at " + humanize.IBytes(speed) + "/sec " + "[" + humanize.IBytes(
 					uint64(usedCurrent)) + "/" + humanize.IBytes(uint64(poolStatus.Decommission.TotalSize)) + "]"
 				msg += "\nStarted: " + humanize.RelTime(time.Now().UTC(), poolStatus.Decommission.StartTime, "", "ago")
@@ -139,14 +139,19 @@ func mainAdminDecommissionStatus(ctx *cli.Context) error {
 	cellText[0] = []string{
 		"ID",
 		"Pools",
-		"Capacity",
+		"Drives Usage",
 		"Status",
 	}
 	for idx, pool := range poolStatuses {
 		idx++
 		totalSize := uint64(pool.Decommission.TotalSize)
-		currentSize := uint64(pool.Decommission.CurrentSize)
-		capacity := humanize.IBytes(totalSize-currentSize) + " (used) / " + humanize.IBytes(totalSize) + " (total)"
+		usedCurrent := uint64(pool.Decommission.TotalSize - pool.Decommission.CurrentSize)
+		var capacity string
+		if totalSize == 0 {
+			capacity = "0% (total: 0B)"
+		} else {
+			capacity = fmt.Sprintf("%.1f%% (total: %s)", 100*float64(usedCurrent)/float64(totalSize), humanize.IBytes(totalSize))
+		}
 		status := "Active"
 		if pool.Decommission != nil {
 			if pool.Decommission.Complete {

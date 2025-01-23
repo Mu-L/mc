@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -25,7 +25,7 @@ import (
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var encryptInfoCmd = cli.Command{
@@ -53,7 +53,7 @@ EXAMPLES:
 // checkversionInfoSyntax - validate all the passed arguments
 func checkEncryptInfoSyntax(ctx *cli.Context) {
 	if len(ctx.Args()) != 1 {
-		cli.ShowCommandHelpAndExit(ctx, ctx.Command.Name, 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 }
 
@@ -83,7 +83,7 @@ func (v encryptInfoMessage) String() string {
 		msg = "Auto encryption 'sse-s3' is enabled"
 	}
 	if v.Encryption.KeyID != "" {
-		msg = fmt.Sprintf("Auto encrytion 'sse-kms' is enabled with KeyID: %s", v.Encryption.KeyID)
+		msg = fmt.Sprintf("Auto encryption 'sse-kms' is enabled with KeyID: %s", v.Encryption.KeyID)
 	}
 	return console.Colorize("encryptInfoMessage", msg)
 }

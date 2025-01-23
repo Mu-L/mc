@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -29,7 +29,7 @@ import (
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var anonymousFlags = []cli.Flag{
@@ -68,7 +68,7 @@ FILE:
 
 EXAMPLES:
   1. Set bucket to "download" on Amazon S3 cloud storage.
-     {{.Prompt}} {{.HelpName}} set download s3/burningman2011
+     {{.Prompt}} {{.HelpName}} set download s3/mybucket
 
   2. Set bucket to "public" on Amazon S3 cloud storage.
      {{.Prompt}} {{.HelpName}} set public s3/shared
@@ -80,7 +80,7 @@ EXAMPLES:
      {{.Prompt}} {{.HelpName}} set public s3/public-commons/images
 
   5. Set a custom prefix based bucket anonymous on Amazon S3 cloud storage using a JSON file.
-     {{.Prompt}} {{.HelpName}} set-json /path/to/anonymous.json s3/public-commons/images
+     {{.Prompt}} {{.HelpName}} set-json /path/to/anonymous.json s3/public-commons/images 
 
   6. Get bucket permissions.
      {{.Prompt}} {{.HelpName}} get s3/shared
@@ -178,11 +178,11 @@ func checkAnonymousSyntax(ctx *cli.Context) {
 	argsLength := len(ctx.Args())
 	// Always print a help message when we have extra arguments
 	if argsLength > 3 {
-		cli.ShowCommandHelpAndExit(ctx, "anonymous", 1) // last argument is exit code.
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code.
 	}
 	// Always print a help message when no arguments specified
 	if argsLength < 1 {
-		cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+		showCommandHelpAndExit(ctx, 1)
 	}
 
 	firstArg := ctx.Args().Get(0)
@@ -193,7 +193,7 @@ func checkAnonymousSyntax(ctx *cli.Context) {
 	case "set":
 		// Always expect three arguments when setting a anonymous permission.
 		if argsLength != 3 {
-			cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+			showCommandHelpAndExit(ctx, 1)
 		}
 		if accessPerms(secondArg) != accessNone &&
 			accessPerms(secondArg) != accessDownload &&
@@ -207,25 +207,25 @@ func checkAnonymousSyntax(ctx *cli.Context) {
 	case "set-json":
 		// Always expect three arguments when setting a anonymous permission.
 		if argsLength != 3 {
-			cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+			showCommandHelpAndExit(ctx, 1)
 		}
 	case "get", "get-json":
 		// get or get-json always expects two arguments
 		if argsLength != 2 {
-			cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+			showCommandHelpAndExit(ctx, 1)
 		}
 	case "list":
 		// Always expect an argument after list cmd
 		if argsLength != 2 {
-			cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+			showCommandHelpAndExit(ctx, 1)
 		}
 	case "links":
 		// Always expect an argument after links cmd
 		if argsLength != 2 {
-			cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+			showCommandHelpAndExit(ctx, 1)
 		}
 	default:
-		cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+		showCommandHelpAndExit(ctx, 1)
 	}
 }
 
@@ -406,7 +406,7 @@ func runAnonymousLinksCmd(args cli.Args, recursive bool) {
 
 			// Encode public URL
 			u, e := url.Parse(content.URL.String())
-			errorIf(probe.NewError(e), "Unable to parse url `"+content.URL.String()+"`.")
+			errorIf(probe.NewError(e), "Unable to parse url `%s`.", content.URL)
 			publicURL := u.String()
 
 			// Construct the message to be displayed to the user
@@ -425,27 +425,34 @@ func runAnonymousCmd(args cli.Args) {
 	ctx, cancelAnonymous := context.WithCancel(globalContext)
 	defer cancelAnonymous()
 
-	var operation, anonymousStr string
+	var targetURL, anonymousStr string
+	var perms accessPerms
 	var probeErr *probe.Error
-	perms := accessPerms(args.Get(1))
-	targetURL := args.Get(2)
-	if perms.isValidAccessPERM() {
-		operation = "set"
+
+	operation := args.First()
+	switch operation {
+	case "set":
+		perms = accessPerms(args.Get(1))
+		if !perms.isValidAccessPERM() {
+			fatalIf(errDummy().Trace(), "Invalid access permission: `"+string(perms)+"`.")
+		}
+		targetURL = args.Get(2)
 		probeErr = doSetAccess(ctx, targetURL, perms)
 		if probeErr == nil {
 			perms, _, probeErr = doGetAccess(ctx, targetURL)
 		}
-	} else if perms.isValidAccessFile() {
-		probeErr = doSetAccessJSON(ctx, targetURL, perms)
-		operation = "set-json"
-	} else {
-		targetURL = args.Get(1)
-		operation = "get"
-		if args.First() == "get-json" {
-			operation = "get-json"
+	case "set-json":
+		perms = accessPerms(args.Get(1))
+		if !perms.isValidAccessFile() {
+			fatalIf(errDummy().Trace(), "Invalid access file: `"+string(perms)+"`.")
 		}
+		targetURL = args.Get(2)
+		probeErr = doSetAccessJSON(ctx, targetURL, perms)
+	case "get", "get-json":
+		targetURL = args.Get(1)
 		perms, anonymousStr, probeErr = doGetAccess(ctx, targetURL)
-
+	default:
+		fatalIf(errDummy().Trace(), "Invalid operation: `"+operation+"`.")
 	}
 	// Upon error exit.
 	if probeErr != nil {
@@ -493,7 +500,7 @@ func mainAnonymous(ctx *cli.Context) error {
 		runAnonymousLinksCmd(ctx.Args().Tail(), ctx.Bool("recursive"))
 	default:
 		// Shows command example and exit
-		cli.ShowCommandHelpAndExit(ctx, "anonymous", 1)
+		showCommandHelpAndExit(ctx, 1)
 	}
 	return nil
 }

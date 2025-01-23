@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -26,7 +26,7 @@ import (
 	"github.com/minio/cli"
 	"github.com/minio/mc/pkg/probe"
 	minio "github.com/minio/minio-go/v7"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var retentionSetFlags = []cli.Flag{
@@ -58,7 +58,7 @@ var retentionSetFlags = []cli.Flag{
 
 var retentionSetCmd = cli.Command{
 	Name:         "set",
-	Usage:        "set retention for object(s)",
+	Usage:        "apply retention settings on object(s)",
 	Action:       mainRetentionSet,
 	OnUsageError: onUsageError,
 	Before:       setGlobalsFromContext,
@@ -96,7 +96,7 @@ EXAMPLES:
 func parseSetRetentionArgs(cliCtx *cli.Context) (target, versionID string, recursive bool, timeRef time.Time, withVersions bool, mode minio.RetentionMode, validity uint64, unit minio.ValidityUnit, bypass, bucketMode bool) {
 	args := cliCtx.Args()
 	if len(args) != 3 {
-		cli.ShowCommandHelpAndExit(cliCtx, "set", 1)
+		showCommandHelpAndExit(cliCtx, 1)
 	}
 
 	mode = minio.RetentionMode(strings.ToUpper(args[0]))
@@ -128,10 +128,10 @@ func parseSetRetentionArgs(cliCtx *cli.Context) (target, versionID string, recur
 }
 
 // Set Retention for one object/version or many objects within a given prefix.
-func setRetention(ctx context.Context, target, versionID string, timeRef time.Time, withOlderVersions, isRecursive bool,
+func setRetention(ctx context.Context, target, versionID string, timeRef time.Time, withVersions, isRecursive bool,
 	mode minio.RetentionMode, validity uint64, unit minio.ValidityUnit, bypassGovernance bool,
 ) error {
-	return applyRetention(ctx, lockOpSet, target, versionID, timeRef, withOlderVersions, isRecursive, mode, validity, unit, bypassGovernance)
+	return applyRetention(ctx, lockOpSet, target, versionID, timeRef, withVersions, isRecursive, mode, validity, unit, bypassGovernance)
 }
 
 func setBucketLock(urlStr string, mode minio.RetentionMode, validity uint64, unit minio.ValidityUnit) error {
@@ -148,7 +148,7 @@ func mainRetentionSet(cliCtx *cli.Context) error {
 
 	target, versionID, recursive, rewind, withVersions, mode, validity, unit, bypass, bucketMode := parseSetRetentionArgs(cliCtx)
 
-	fatalIfBucketLockNotEnabled(ctx, target)
+	fatalIfBucketLockNotSupported(ctx, target)
 
 	if bucketMode {
 		return setBucketLock(target, mode, validity, unit)

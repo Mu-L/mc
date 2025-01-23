@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,7 +34,7 @@ import (
 	"github.com/minio/cli"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio-go/v7"
-	"github.com/minio/pkg/mimedb"
+	"github.com/minio/pkg/v3/mimedb"
 )
 
 var sqlFlags = []cli.Flag{
@@ -81,48 +80,46 @@ var sqlCmd = cli.Command{
 	Action:       mainSQL,
 	OnUsageError: onUsageError,
 	Before:       setGlobalsFromContext,
-	Flags:        append(append(sqlFlags, ioFlags...), globalFlags...),
+	Flags:        append(append(sqlFlags, encCFlag), globalFlags...),
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
 
 USAGE:
   {{.HelpName}} [FLAGS] TARGET [TARGET...]
-{{if .VisibleFlags}}	       
+{{if .VisibleFlags}}
 FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}{{end}}
-ENVIRONMENT VARIABLES:
-  MC_ENCRYPT_KEY: list of comma delimited prefix=secret values
 
 SERIALIZATION OPTIONS:
-  For query serialization options, refer to https://docs.min.io/docs/minio-client-complete-guide#sql
+  For query serialization options, refer to https://min.io/docs/minio/linux/reference/minio-mc/mc-sql.html#command-mc.sql
 
 EXAMPLES:
   1. Run a query on a set of objects recursively on AWS S3.
      {{.Prompt}} {{.HelpName}} --recursive --query "select * from S3Object" s3/personalbucket/my-large-csvs/
 
   2. Run a query on an object on MinIO.
-     {{.Prompt}} {{.HelpName}} --query "select count(s.power) from S3Object" myminio/iot-devices/power-ratio.csv
+     {{.Prompt}} {{.HelpName}} --query "select count(s.power) from S3Object s" myminio/iot-devices/power-ratio.csv
 
   3. Run a query on an encrypted object with customer provided keys.
-     {{.Prompt}} {{.HelpName}} --encrypt-key "myminio/iot-devices=32byteslongsecretkeymustbegiven1" \
-           --query "select count(s.power) from S3Object s" myminio/iot-devices/power-ratio-encrypted.csv
+     {{.Prompt}} {{.HelpName}} --enc-c "myminio/iot-devices=MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDA" \
+         --query "select count(s.power) from S3Object s" myminio/iot-devices/power-ratio-encrypted.csv
 
   4. Run a query on an object on MinIO in gzip format using ; as field delimiter,
      newline as record delimiter and file header to be used
      {{.Prompt}} {{.HelpName}} --compression GZIP --csv-input "rd=\n,fh=USE,fd=;" \
-           --query "select count(s.power) from S3Object" myminio/iot-devices/power-ratio.csv.gz
+         --query "select count(s.power) from S3Object s" myminio/iot-devices/power-ratio.csv.gz
 
   5. Run a query on an object on MinIO in gzip format using ; as field delimiter,
      newline as record delimiter and file header to be used
      {{.Prompt}} {{.HelpName}} --compression GZIP --csv-input "rd=\n,fh=USE,fd=;" \
-           --json-output "rd=\n\n" --query "select * from S3Object" myminio/iot-devices/data.csv
+         --json-output "rd=\n\n" --query "select * from S3Object" myminio/iot-devices/data.csv
 
   6. Run same query as in 5., but specify csv output headers. If --csv-output-headers is
      specified as "", first row of csv is interpreted as header
      {{.Prompt}} {{.HelpName}} --compression GZIP --csv-input "rd=\n,fh=USE,fd=;" \
-           --csv-output "rd=\n" --csv-output-header "device_id,uptime,lat,lon" \
-           --query "select * from S3Object" myminio/iot-devices/data.csv
+         --csv-output "rd=\n" --csv-output-header "device_id,uptime,lat,lon" \
+         --query "select * from S3Object" myminio/iot-devices/data.csv
 `,
 }
 
@@ -309,11 +306,12 @@ func getCSVHeader(sourceURL string, encKeyDB map[string][]prefixSSEPair) ([]stri
 		r = os.Stdin
 	default:
 		var err *probe.Error
-		var metadata map[string]string
-		if r, metadata, err = getSourceStreamMetadataFromURL(globalContext, sourceURL, "", time.Time{}, encKeyDB, false); err != nil {
+		var content *ClientContent
+		if r, content, err = getSourceStreamMetadataFromURL(globalContext, sourceURL, "", time.Time{}, encKeyDB, false); err != nil {
 			return nil, err.Trace(sourceURL)
 		}
-		ctype := metadata["Content-Type"]
+
+		ctype := content.Metadata["Content-Type"]
 		if strings.Contains(ctype, "gzip") {
 			var e error
 			r, e = gzip.NewReader(r)
@@ -323,15 +321,15 @@ func getCSVHeader(sourceURL string, encKeyDB map[string][]prefixSSEPair) ([]stri
 			defer r.Close()
 		} else if strings.Contains(ctype, "bzip") {
 			defer r.Close()
-			r = ioutil.NopCloser(bzip2.NewReader(r))
+			r = io.NopCloser(bzip2.NewReader(r))
 		} else {
 			defer r.Close()
 		}
 	}
 	br := bufio.NewReader(r)
-	line, _, err := br.ReadLine()
-	if err != nil {
-		return nil, probe.NewError(err)
+	line, _, e := br.ReadLine()
+	if e != nil {
+		return nil, probe.NewError(e)
 	}
 	return strings.Split(string(line), ","), nil
 }
@@ -430,7 +428,7 @@ func getAndValidateArgs(ctx *cli.Context, encKeyDB map[string][]prefixSSEPair, u
 // check sql input arguments.
 func checkSQLSyntax(ctx *cli.Context) {
 	if len(ctx.Args()) == 0 {
-		cli.ShowCommandHelpAndExit(ctx, "sql", 1) // last argument is exit code.
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code.
 	}
 }
 
@@ -445,7 +443,7 @@ func mainSQL(cliCtx *cli.Context) error {
 		query   string
 	)
 	// Parse encryption keys per command.
-	encKeyDB, err := getEncKeys(cliCtx)
+	encKeyDB, err := validateAndCreateEncryptionKeys(cliCtx)
 	fatalIf(err, "Unable to parse encryption keys.")
 
 	// validate sql input arguments.
@@ -454,8 +452,8 @@ func mainSQL(cliCtx *cli.Context) error {
 	URLs := cliCtx.Args()
 	writeHdr := true
 	for _, url := range URLs {
-		if _, targetContent, err := url2Stat(ctx, url, "", false, encKeyDB, time.Time{}, false); err != nil {
-			errorIf(err.Trace(url), "Unable to run sql for "+url+".")
+		if _, targetContent, err := url2Stat(ctx, url2StatOptions{urlStr: url, versionID: "", fileAttr: false, encKeyDB: encKeyDB, timeRef: time.Time{}, isZip: false, ignoreBucketExistsCheck: false}); err != nil {
+			errorIf(err.Trace(url), "Unable to run sql for %s.", url)
 			continue
 		} else if !targetContent.Type.IsDir() {
 			if writeHdr {
@@ -468,19 +466,22 @@ func mainSQL(cliCtx *cli.Context) error {
 		targetAlias, targetURL, _ := mustExpandAlias(url)
 		clnt, err := newClientFromAlias(targetAlias, targetURL)
 		if err != nil {
-			errorIf(err.Trace(url), "Unable to initialize target `"+url+"`.")
+			errorIf(err.Trace(url), "Unable to initialize target `%s`.", url)
 			continue
 		}
 
-		for content := range clnt.List(ctx, ListOptions{Recursive: cliCtx.Bool("recursive"), ShowDir: DirNone}) {
+		for content := range clnt.List(ctx, ListOptions{Recursive: cliCtx.Bool("recursive"), WithMetadata: true, ShowDir: DirNone}) {
 			if content.Err != nil {
-				errorIf(content.Err.Trace(url), "Unable to list on target `"+url+"`.")
+				errorIf(content.Err.Trace(url), "Unable to list on target `%s`.", url)
 				continue
 			}
 			if writeHdr {
 				query, csvHdrs, selOpts = getAndValidateArgs(cliCtx, encKeyDB, targetAlias+content.URL.Path)
 			}
 			contentType := mimedb.TypeByExtension(filepath.Ext(content.URL.Path))
+			if len(content.UserMetadata) != 0 && content.UserMetadata["content-type"] != "" {
+				contentType = content.UserMetadata["content-type"]
+			}
 			for _, cTypeSuffix := range supportedContentTypes {
 				if strings.Contains(contentType, cTypeSuffix) {
 					errorIf(sqlSelect(targetAlias+content.URL.Path, query,

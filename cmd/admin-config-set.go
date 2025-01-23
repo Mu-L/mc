@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 MinIO, Inc.
+// Copyright (c) 2015-2022 MinIO, Inc.
 //
 // This file is part of MinIO Object Storage stack
 //
@@ -24,9 +24,9 @@ import (
 	"github.com/fatih/color"
 	"github.com/minio/cli"
 	json "github.com/minio/colorjson"
-	"github.com/minio/madmin-go"
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/minio/pkg/console"
+	"github.com/minio/pkg/v3/console"
 )
 
 var adminConfigSetCmd = cli.Command{
@@ -88,7 +88,7 @@ func (u configSetMessage) JSON() string {
 // checkAdminConfigSetSyntax - validate all the passed arguments
 func checkAdminConfigSetSyntax(ctx *cli.Context) {
 	if !ctx.Args().Present() && len(ctx.Args()) < 1 {
-		cli.ShowCommandHelpAndExit(ctx, "set", 1) // last argument is exit code
+		showCommandHelpAndExit(ctx, 1) // last argument is exit code
 	}
 }
 
@@ -112,13 +112,13 @@ func mainAdminConfigSet(ctx *cli.Context) error {
 
 	if !strings.Contains(input, madmin.KvSeparator) {
 		// Call get config API
-		hr, e := client.HelpConfigKV(globalContext, args.Get(1), args.Get(2), ctx.IsSet("env"))
+		hr, e := client.HelpConfigKV(globalContext, args.Get(1), args.Get(2), ctx.Bool("env"))
 		fatalIf(probe.NewError(e), "Unable to get help for the sub-system")
 
 		// Print
 		printMsg(configHelpMessage{
 			Value:   hr,
-			envOnly: ctx.IsSet("env"),
+			envOnly: ctx.Bool("env"),
 		})
 
 		return nil
